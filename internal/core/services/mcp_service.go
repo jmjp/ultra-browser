@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -13,272 +14,129 @@ import (
 	"ultra-browser/internal/core/ports"
 )
 
+// toolHandler é a assinatura de um handler de ferramenta.
+type toolHandler func(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
+
 // MCPService implementa a lógica de negócio do protocolo MCP.
 type MCPService struct {
-	browser ports.BrowserPort
-	fs      ports.FileSystemPort
-	tools   map[string]domain.Tool
-	idCount atomic.Uint64
+	browser  ports.BrowserPort
+	fs       ports.FileSystemPort
+	tools    map[string]domain.Tool
+	handlers map[string]toolHandler
+	idCount  atomic.Uint64
 }
 
 // NewMCPService cria uma nova instância do serviço MCP.
 func NewMCPService(browser ports.BrowserPort, fs ports.FileSystemPort) *MCPService {
 	s := &MCPService{
-		browser: browser,
-		fs:      fs,
-		tools:   make(map[string]domain.Tool),
+		browser:  browser,
+		fs:       fs,
+		tools:    make(map[string]domain.Tool),
+		handlers: make(map[string]toolHandler),
 	}
 	s.registerTools()
+	s.registerHandlers()
 	return s
 }
 
-// ListTools retorna a lista de ferramentas disponíveis.
+// ListTools retorna a lista de ferramentas disponíveis em ordem alfabética.
 func (s *MCPService) ListTools(ctx context.Context) ([]domain.Tool, error) {
 	tools := make([]domain.Tool, 0, len(s.tools))
 	for _, t := range s.tools {
 		tools = append(tools, t)
 	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 	return tools, nil
 }
 
-// CallTool executa uma ferramenta no navegador.
+// CallTool executa uma ferramenta pelo nome usando o registry de handlers.
 func (s *MCPService) CallTool(ctx context.Context, name string, params json.RawMessage) (json.RawMessage, error) {
-	tool, ok := s.tools[name]
+	handler, ok := s.handlers[name]
 	if !ok {
 		return nil, fmt.Errorf("tool not found: %s", name)
 	}
+	return handler(ctx, params)
+}
 
-	// Orquestração especial para capture_node (precisa de acesso ao FileSystem)
-	if name == "capture_node" {
-		var req domain.CaptureNodeRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for capture_node: %w", err)
-		}
+// registerHandlers associa cada nome de ferramenta ao seu handler.
+func (s *MCPService) registerHandlers() {
+	// Ferramentas orquestradas localmente (precisam de fs ou lógica especial)
+	s.handlers["capture_node"] = s.handleCaptureNode
+	s.handlers["screenshot"] = s.handleScreenshot
+	s.handlers["upload_file"] = s.handleUploadFile
 
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
+	// Ferramentas com validação tipada + dispatch direto para o browser
+	s.handlers["type_text"] = makeTypedHandler(s, func(ctx context.Context, req domain.TypeTextRequest) (any, error) {
+		return s.browser.TypeText(ctx, req)
+	})
+	s.handlers["wait_for_element"] = makeTypedHandler(s, func(ctx context.Context, req domain.WaitForElementRequest) (any, error) {
+		return s.browser.WaitForElement(ctx, req)
+	})
+	s.handlers["get_value"] = makeTypedHandler(s, func(ctx context.Context, req domain.GetValueRequest) (any, error) {
+		return s.browser.GetValue(ctx, req)
+	})
+	s.handlers["select_option"] = makeTypedHandler(s, func(ctx context.Context, req domain.SelectOptionRequest) (any, error) {
+		return s.browser.SelectOption(ctx, req)
+	})
+	s.handlers["scroll"] = makeTypedHandler(s, func(ctx context.Context, req domain.ScrollRequest) (any, error) {
+		return s.browser.Scroll(ctx, req)
+	})
+	s.handlers["hover"] = makeTypedHandler(s, func(ctx context.Context, req domain.HoverRequest) (any, error) {
+		return s.browser.Hover(ctx, req)
+	})
+	s.handlers["switch_tab"] = makeTypedHandler(s, func(ctx context.Context, req domain.SwitchTabRequest) (any, error) {
+		return s.browser.SwitchTab(ctx, req)
+	})
 
-		// Chama o browser para capturar o nó
-		resp, err := s.browser.CaptureNode(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("browser capture failed: %w", err)
-		}
-
-		if !resp.Success {
-			return nil, fmt.Errorf("browser failed to capture node: %s", resp.Message)
-		}
-
-		// Se o browser retornou dados, salva no disco
-		if resp.Content != "" {
-			var data []byte
-			if req.Format == "png" {
-				// PNG vem em base64
-				decoded, err := base64.StdEncoding.DecodeString(resp.Content)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode base64 content: %w", err)
-				}
-				data = decoded
-			} else {
-				// HTML vem como string pura
-				data = []byte(resp.Content)
+	// Ferramentas genéricas: delegadas à bridge via ExecuteCommand com retry
+	for name := range s.tools {
+		if _, already := s.handlers[name]; !already {
+			n := name // captura para closure
+			s.handlers[n] = func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+				return s.executeBridgeCommand(ctx, n, params)
 			}
-
-			if err := s.fs.WriteFile(ctx, req.Path, data); err != nil {
-				return nil, fmt.Errorf("failed to save file to %s: %w", req.Path, err)
-			}
-			resp.FilePath = req.Path
-			resp.Message = fmt.Sprintf("Successfully saved %s to %s", req.Format, req.Path)
 		}
-
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
 	}
+}
 
-	// Orquestração para novas ferramentas
-	switch name {
-	case "type_text":
-		var req domain.TypeTextRequest
+// makeTypedHandler cria um toolHandler genérico que faz unmarshal, valida e delega.
+func makeTypedHandler[T interface{ Validate() error }](s *MCPService, fn func(context.Context, T) (any, error)) toolHandler {
+	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+		var req T
 		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
+			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		if err := req.Validate(); err != nil {
 			return nil, fmt.Errorf("validation failed: %w", err)
 		}
-		resp, err := s.browser.TypeText(ctx, req)
+		resp, err := fn(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "wait_for_element":
-		var req domain.WaitForElementRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.WaitForElement(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "get_value":
-		var req domain.GetValueRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.GetValue(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "select_option":
-		var req domain.SelectOptionRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.SelectOption(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "upload_file":
-		var req domain.UploadFileRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		// Lê o arquivo do sistema de arquivos local
-		content, err := s.fs.ReadFile(ctx, req.Path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read file for upload: %w", err)
-		}
-		resp, err := s.browser.UploadFile(ctx, req, content)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "scroll":
-		var req domain.ScrollRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.Scroll(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "hover":
-		var req domain.HoverRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.Hover(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "switch_tab":
-		var req domain.SwitchTabRequest
-		if err := json.Unmarshal(params, &req); err != nil {
-			return nil, fmt.Errorf("invalid params for %s: %w", name, err)
-		}
-		if err := req.Validate(); err != nil {
-			return nil, fmt.Errorf("validation failed: %w", err)
-		}
-		resp, err := s.browser.SwitchTab(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
-
-	case "screenshot":
-		var req domain.ScreenshotRequest
-		// params pode estar vazio para screenshot
-		if len(params) > 0 && string(params) != "{}" {
-			if err := json.Unmarshal(params, &req); err != nil {
-				return nil, fmt.Errorf("invalid params for screenshot: %w", err)
-			}
-			if err := req.Validate(); err != nil {
-				return nil, fmt.Errorf("validation failed: %w", err)
-			}
-		}
-
-		// Chama o navegador para capturar a tela
-		resp, err := s.browser.Screenshot(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("browser screenshot failed: %w", err)
-		}
-
-		if !resp.Success {
-			return nil, fmt.Errorf("browser failed to capture screenshot: %s", resp.Message)
-		}
-
-		// Se um path foi fornecido, salva no disco
-		if req.Path != "" && resp.Content != "" {
-			decoded, err := base64.StdEncoding.DecodeString(resp.Content)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode base64 screenshot: %w", err)
-			}
-
-			if err := s.fs.WriteFile(ctx, req.Path, decoded); err != nil {
-				return nil, fmt.Errorf("failed to save screenshot to %s: %w", req.Path, err)
-			}
-			resp.FilePath = req.Path
-			resp.Message = fmt.Sprintf("Screenshot saved to %s", req.Path)
-		}
-
-		result, _ := json.Marshal(resp)
-		return s.formatMCPResult(name, result)
+		return s.formatMCPResult("generic", result)
 	}
+}
 
-	// Gera ID dinâmico para correlação na bridge
+// executeBridgeCommand envia um comando à bridge com retry exponencial.
+// A lógica de retry pertence à infraestrutura — fica aqui como camada de resiliência de aplicação.
+func (s *MCPService) executeBridgeCommand(ctx context.Context, name string, params json.RawMessage) (json.RawMessage, error) {
 	id := fmt.Sprintf("%d", s.idCount.Add(1))
-
-	// Envia o comando para a bridge (BrowserPort)
 	req := domain.BridgeMessage{
 		ID:     id,
-		Tool:   tool.Name,
+		Tool:   name,
 		Params: params,
 	}
 
-	var resp domain.BridgeMessage
-	var err error
+	const maxRetries = 3
+	var (
+		resp domain.BridgeMessage
+		err  error
+	)
 
-	// Resiliência: Implementa retentativas simples com timeout
-	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
-		// Timeout de 30 segundos por tentativa (nível de aplicação)
 		tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		resp, err = s.browser.ExecuteCommand(tctx, req)
 		cancel()
@@ -286,13 +144,9 @@ func (s *MCPService) CallTool(ctx context.Context, name string, params json.RawM
 		if err == nil {
 			break
 		}
-
-		// Se o erro for cancelamento do contexto pai, não retenta
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
+		if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil) {
 			return nil, err
 		}
-
-		// Espera exponencial simples ou fixa antes de retentar
 		if i < maxRetries-1 {
 			time.Sleep(time.Duration(100*(i+1)) * time.Millisecond)
 		}
@@ -301,16 +155,121 @@ func (s *MCPService) CallTool(ctx context.Context, name string, params json.RawM
 	if err != nil {
 		return nil, fmt.Errorf("bridge execution failed after %d attempts: %w", maxRetries, err)
 	}
-
 	if resp.Error != "" {
 		return nil, errors.New(resp.Error)
 	}
 
-	// Conversão para o formato de resposta MCP Tool Result
 	return s.formatMCPResult(name, resp.Result)
 }
 
-// formatMCPResult converte o resultado bruto da bridge para o padrão de resposta MCP.
+// --- Handlers orquestrados ---
+
+func (s *MCPService) handleCaptureNode(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+	var req domain.CaptureNodeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params for capture_node: %w", err)
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	resp, err := s.browser.CaptureNode(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("browser capture failed: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("browser failed to capture node: %s", resp.Message)
+	}
+
+	if resp.Content != "" {
+		data, err := s.decodeContent(resp.Content, req.Format)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.fs.WriteFile(ctx, req.Path, data); err != nil {
+			return nil, fmt.Errorf("failed to save file to %s: %w", req.Path, err)
+		}
+		resp.FilePath = req.Path
+		resp.Message = fmt.Sprintf("Successfully saved %s to %s", req.Format, req.Path)
+	}
+
+	result, _ := json.Marshal(resp)
+	return s.formatMCPResult("capture_node", result)
+}
+
+func (s *MCPService) handleScreenshot(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+	var req domain.ScreenshotRequest
+	if len(params) > 0 && string(params) != "{}" {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, fmt.Errorf("invalid params for screenshot: %w", err)
+		}
+		if err := req.Validate(); err != nil {
+			return nil, fmt.Errorf("validation failed: %w", err)
+		}
+	}
+
+	resp, err := s.browser.Screenshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("browser screenshot failed: %w", err)
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("browser failed to capture screenshot: %s", resp.Message)
+	}
+
+	if req.Path != "" && resp.Content != "" {
+		decoded, err := base64.StdEncoding.DecodeString(resp.Content)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 screenshot: %w", err)
+		}
+		if err := s.fs.WriteFile(ctx, req.Path, decoded); err != nil {
+			return nil, fmt.Errorf("failed to save screenshot to %s: %w", req.Path, err)
+		}
+		resp.FilePath = req.Path
+		resp.Message = fmt.Sprintf("Screenshot saved to %s", req.Path)
+	}
+
+	result, _ := json.Marshal(resp)
+	return s.formatMCPResult("screenshot", result)
+}
+
+func (s *MCPService) handleUploadFile(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+	var req domain.UploadFileRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid params for upload_file: %w", err)
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	content, err := s.fs.ReadFile(ctx, req.Path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file for upload: %w", err)
+	}
+
+	resp, err := s.browser.UploadFile(ctx, req, content)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := json.Marshal(resp)
+	return s.formatMCPResult("generic", result)
+}
+
+// --- Helpers ---
+
+// decodeContent converte o conteúdo retornado pelo browser para bytes.
+func (s *MCPService) decodeContent(content, format string) ([]byte, error) {
+	if format == "png" {
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 content: %w", err)
+		}
+		return decoded, nil
+	}
+	return []byte(content), nil
+}
+
+// formatMCPResult converte o resultado bruto para o padrão de resposta MCP.
 func (s *MCPService) formatMCPResult(toolName string, result json.RawMessage) (json.RawMessage, error) {
 	type mcpContent struct {
 		Type     string `json:"type"`
@@ -323,11 +282,8 @@ func (s *MCPService) formatMCPResult(toolName string, result json.RawMessage) (j
 		IsError bool         `json:"isError,omitempty"`
 	}
 
-	response := mcpResponse{
-		Content: []mcpContent{},
-	}
+	response := mcpResponse{Content: []mcpContent{}}
 
-	// Tratamento especializado por tipo de ferramenta
 	switch toolName {
 	case "capture_node":
 		var resp domain.CaptureNodeResponse
@@ -336,43 +292,30 @@ func (s *MCPService) formatMCPResult(toolName string, result json.RawMessage) (j
 			if resp.Message != "" {
 				msg = resp.Message
 			}
-			response.Content = append(response.Content, mcpContent{
-				Type: "text",
-				Text: msg,
-			})
+			response.Content = append(response.Content, mcpContent{Type: "text", Text: msg})
 		} else {
-			response.Content = append(response.Content, mcpContent{
-				Type: "text",
-				Text: string(result),
-			})
+			response.Content = append(response.Content, mcpContent{Type: "text", Text: string(result)})
 		}
 
 	case "screenshot":
-		// Primeiro tenta como CaptureNodeResponse (novo formato interno devido à orquestração de salvamento)
 		var resp domain.CaptureNodeResponse
 		if err := json.Unmarshal(result, &resp); err == nil && resp.Content != "" && resp.Format == "png" {
 			if resp.FilePath == "" {
-				// Retorna a imagem via MCP se não foi salva em arquivo
 				response.Content = append(response.Content, mcpContent{
 					Type:     "image",
 					Data:     resp.Content,
 					MimeType: "image/png",
 				})
 			} else {
-				// Retorna mensagem de confirmação se foi salva em arquivo
 				msg := fmt.Sprintf("Screenshot salvo em: %s", resp.FilePath)
 				if resp.Message != "" {
 					msg = resp.Message
 				}
-				response.Content = append(response.Content, mcpContent{
-					Type: "text",
-					Text: msg,
-				})
+				response.Content = append(response.Content, mcpContent{Type: "text", Text: msg})
 			}
 			break
 		}
-
-		// Fallback: Espera um objeto { "base64": "..." } ou string base64 pura (origem direta da bridge)
+		// Fallback: objeto { "base64": "..." }
 		var data struct {
 			Base64 string `json:"base64"`
 		}
@@ -383,19 +326,11 @@ func (s *MCPService) formatMCPResult(toolName string, result json.RawMessage) (j
 				MimeType: "image/png",
 			})
 		} else {
-			// Fallback para texto se não for um base64 válido
-			response.Content = append(response.Content, mcpContent{
-				Type: "text",
-				Text: string(result),
-			})
+			response.Content = append(response.Content, mcpContent{Type: "text", Text: string(result)})
 		}
 
 	default:
-		// Padrão: Retorna o JSON como texto
-		response.Content = append(response.Content, mcpContent{
-			Type: "text",
-			Text: string(result),
-		})
+		response.Content = append(response.Content, mcpContent{Type: "text", Text: string(result)})
 	}
 
 	return json.Marshal(response)
@@ -463,7 +398,7 @@ func (s *MCPService) registerTools() {
 			"type": "object",
 			"properties": map[string]any{
 				"selector": map[string]any{"type": "string", "description": "Seletor CSS do elemento"},
-				"format":   map[string]any{"type": "string", "enum": []string{"png", "html"}, "description": "Formato de saída"},
+				"format":   map[string]any{"type": "string", "enum": []string{"png", "html"}, "description": "Formato de saída", "default": "html"},
 				"path":     map[string]any{"type": "string", "description": "Caminho absoluto para salvar o arquivo"},
 			},
 			"required": []string{"selector", "path"},
