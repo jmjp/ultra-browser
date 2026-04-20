@@ -77,6 +77,12 @@ Para iniciar o servidor MCP persistente:
 ./ultra-browser -server
 ```
 
+### 5. Using the MCP Tools
+
+Configure your AI client to use the MCP server at
+```bash
+ http://localhost:12306/mcp
+```
 ---
 
 ## 💻 Comandos de Desenvolvimento
