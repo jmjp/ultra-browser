@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ultra Browser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo-section">
+        <img src="icons/logo.png" alt="Logo" class="logo-img">
+        <h1>Ultra Browser</h1>
+      </div>
+    </header>
+
+    <div class="status-card">
+      <div class="status-header">
+        <span class="status-label">Estado da Ponte</span>
+        <div id="status-badge" class="badge offline">
+          <div class="indicator"></div>
+          <span id="status-text">Desconectado</span>
+        </div>
+      </div>
+
+      <div class="info-row">
+        <span class="info-label">Host Nativo</span>
+        <span id="host-name" class="info-value">-</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="refresh-btn">Atualizar</button>
+      <button id="options-btn" class="secondary">Opções</button>
+    </div>
+
+    <footer>
+      <span class="mcp-tag">MCP Bridge v1.0 • Powered by Go</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+

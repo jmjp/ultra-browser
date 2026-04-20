@@ -1,0 +1,12 @@
+CLAUDE.md
+GEMINI.md
+PRD.md
+*.exe
+**/.vscode
+**/.github
+.agents
+.claude
+.gemini
+brain
+.logs
+*.log
