@@ -42,6 +42,14 @@ type MockBrowserPort struct {
 	HoverFunc          func(ctx context.Context, req domain.HoverRequest) (domain.CommonResponse, error)
 	SwitchTabFunc      func(ctx context.Context, req domain.SwitchTabRequest) (domain.CommonResponse, error)
 	ScreenshotFunc     func(ctx context.Context) (domain.CaptureNodeResponse, error)
+	CloseFunc          func() error
+}
+
+func (m *MockBrowserPort) Close() error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc()
+	}
+	return nil
 }
 
 func (m *MockBrowserPort) Screenshot(ctx context.Context) (domain.CaptureNodeResponse, error) {

@@ -7,7 +7,7 @@ import (
 )
 
 // BrowserPort define a interface outbound (secundária) para a comunicação com o navegador.
-// Esta porta abstrai o Native Messaging Bridge que conecta o núcleo ao Chrome.
+// Esta porta abstrai o transporte que conecta o núcleo ao Chrome.
 type BrowserPort interface {
 	// ExecuteCommand envia uma mensagem de comando para a ponte do navegador
 	// e retorna a resposta correspondente de forma síncrona ou correlacionada.
@@ -46,4 +46,7 @@ type BrowserPort interface {
 
 	// Screenshot captura um screenshot PNG da aba ativa.
 	Screenshot(ctx context.Context) (domain.CaptureNodeResponse, error)
+
+	// Close fecha a conexão com o navegador e limpa recursos.
+	Close() error
 }

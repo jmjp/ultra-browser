@@ -1,45 +1,80 @@
-let nativePort = null;
+let socket = null;
 const pendingRequests = new Map();
+let reconnectDelay = 1000; // Começa com 1 segundo
+const maxReconnectDelay = 30000; // Máximo de 30 segundos
+let reconnectTimeoutId = null;
 
 // Mantém o Service Worker vivo
 chrome.alarms.create('keepAlive', { periodInMinutes: 0.1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === 'keepAlive' && !nativePort) {
-        connectNative();
+    if (alarm.name === 'keepAlive' && (!socket || socket.readyState !== WebSocket.OPEN)) {
+        console.log("KeepAlive: Verificando conexão...");
+        connectWebSocket();
     }
 });
 
-function connectNative() {
-    if (nativePort) return;
+function connectWebSocket() {
+    if (reconnectTimeoutId) {
+        clearTimeout(reconnectTimeoutId);
+        reconnectTimeoutId = null;
+    }
+
+    if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
     
-    console.log("Conectando ao host nativo: com.ultra_browser.host");
-    nativePort = chrome.runtime.connectNative("com.ultra_browser.host");
+    console.log("Conectando ao WebSocket: ws://localhost:12306/ws");
+    socket = new WebSocket("ws://localhost:12306/ws");
 
-    nativePort.onMessage.addListener(async (msg) => {
-        // Se for uma requisição do Go (tool call)
-        if (msg.tool) {
-            console.log("Executando tool:", msg.tool, msg.params);
-            const result = await executeTool(msg.tool, msg.params);
-            if (result && result.error) {
-                nativePort.postMessage({ id: msg.id, error: result.error });
-            } else {
-                nativePort.postMessage({ id: msg.id, result });
+    socket.onopen = () => {
+        console.log("WebSocket conectado com sucesso");
+        reconnectDelay = 1000; // Reseta o backoff ao conectar com sucesso
+    };
+
+    socket.onmessage = async (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            
+            // Se for uma requisição do Go (tool call)
+            if (msg.tool) {
+                console.log("Executando tool:", msg.tool, msg.params);
+                const result = await executeTool(msg.tool, msg.params);
+                const response = { id: msg.id };
+                if (result && result.error) {
+                    response.error = result.error;
+                } else {
+                    response.result = result;
+                }
+                socket.send(JSON.stringify(response));
+                return;
             }
-            return;
-        }
 
-        // Se for uma resposta do Go para o Chrome
-        const cb = pendingRequests.get(msg.id);
-        if (cb) {
-            cb(msg);
-            pendingRequests.delete(msg.id);
+            // Se for uma resposta do Go para o Chrome
+            const cb = pendingRequests.get(msg.id);
+            if (cb) {
+                cb(msg);
+                pendingRequests.delete(msg.id);
+            }
+        } catch (err) {
+            console.error("Erro ao processar mensagem do WebSocket:", err);
         }
-    });
+    };
 
-    nativePort.onDisconnect.addListener(() => {
-        console.warn("Host nativo desconectado:", chrome.runtime.lastError?.message);
-        nativePort = null;
-    });
+    socket.onclose = () => {
+        console.warn(`WebSocket desconectado. Tentando reconectar em ${reconnectDelay / 1000}s...`);
+        socket = null;
+        
+        // Agenda a reconexão com backoff exponencial
+        reconnectTimeoutId = setTimeout(() => {
+            connectWebSocket();
+        }, reconnectDelay);
+        
+        // Aumenta o delay para a próxima tentativa (dobra, até o máximo)
+        reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+    };
+
+    socket.onerror = (err) => {
+        console.error("Erro no WebSocket:", err);
+        // O onclose será chamado automaticamente após o onerror
+    };
 }
 
 async function executeTool(tool, params) {
@@ -60,7 +95,7 @@ async function executeTool(tool, params) {
             }
             case "screenshot": {
                 const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
-                return { success: true, base64: dataUrl.split(',')[1] };
+                return { success: true, content: dataUrl.split(',')[1], format: "png" };
             }
             case "capture_node": {
                 const [result] = await chrome.scripting.executeScript({
@@ -138,19 +173,31 @@ async function executeTool(tool, params) {
                 return result.result;
             }
             case "execute_script": {
-                const [result] = await chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    world: "MAIN",
-                    func: (code) => {
-                        try {
-                            return { result: eval(code) };
-                        } catch (err) {
-                            return { error: err.message };
-                        }
-                    },
-                    args: [params.script],
-                });
-                return result.result;
+                const target = { tabId: tab.id };
+                try {
+                    await chrome.debugger.attach(target, "1.3");
+                    const response = await new Promise((resolve, reject) => {
+                        chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+                            expression: `(async () => { ${params.script} })()`,
+                            returnByValue: true,
+                            awaitPromise: true,
+                            userGesture: true
+                        }, (resp) => {
+                            if (chrome.runtime.lastError) {
+                                reject(new Error(chrome.runtime.lastError.message));
+                            } else if (resp.exceptionDetails) {
+                                reject(new Error(resp.exceptionDetails.exception.description || "Erro na execução do script"));
+                            } else {
+                                resolve(resp.result.value);
+                            }
+                        });
+                    });
+                    await chrome.debugger.detach(target);
+                    return { result: response };
+                } catch (err) {
+                    try { await chrome.debugger.detach(target); } catch (e) {}
+                    return { error: err.message };
+                }
             }
             case "switch_tab": {
                 const tabId = parseInt(params.tab_id);
@@ -198,13 +245,16 @@ async function sendToContentScript(tabId, message) {
 // Escuta mensagens do popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === "getStatus") {
-        sendResponse({ connected: !!nativePort, hostName: "com.ultra_browser.host" });
+        sendResponse({ 
+            connected: socket?.readyState === WebSocket.OPEN, 
+            hostName: "WebSocket (ws://localhost:12306/ws)" 
+        });
     }
     return true;
 });
 
 // Inicializa a conexão
-connectNative();
+connectWebSocket();
 
 /**
  * Recorta uma imagem em Base64 usando OffscreenCanvas.
