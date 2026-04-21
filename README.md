@@ -13,14 +13,14 @@
 O projeto utiliza uma **Arquitetura Hexagonal** (Ports and Adapters) para garantir pureza no domínio e facilidade de manutenção, mantendo zero dependências externas (apenas a `stdlib` do Go).
 
 ### Componentes Principais
-1.  **Go Binary (Backend):** Atua como o servidor MCP (JSON-RPC 2.0 via HTTP/SSE) e gerencia a comunicação Native Messaging com a extensão.
+1.  **Go Binary (Backend):** Atua como o servidor MCP (JSON-RPC 2.0 via HTTP/SSE) e gerencia a comunicação com a extensão.
 2.  **Chrome Extension (Executor):** Uma extensão Manifest V3 que executa as ferramentas dentro das abas do navegador (manipulação de DOM, screenshots, etc.).
-3.  **Bridge Native Messaging:** Comunicação ultra-rápida via `stdin`/`stdout` com framing de 4 bytes.
+3.  **Bridge Hub:** Gerencia o transporte ativo (HTTP/SSE ou WebSocket) para comunicação bi-direcional com o navegador.
 
 ```mermaid
 graph TD
     AI[AI Client / Claude] -- HTTP/SSE (MCP) --> Server[Go Binary]
-    Server -- Native Messaging --> Ext[Chrome Extension]
+    Server -- HTTP/SSE / WebSocket --> Ext[Chrome Extension]
     Ext -- DOM/Tab API --> Browser[Google Chrome]
 ```
 
@@ -53,28 +53,23 @@ O sistema expõe diversas capacidades de automação para a IA:
 - **Google Chrome**
 
 ### 2. Configuração do Backend (Go)
-Compile o binário e registre o host nativo no sistema:
+Compile o binário:
 
 ```bash
 # Compilar o executável
 go build -o ultra-browser .
-
-# Registrar como host nativo (Necessário para o Chrome reconhecer o binário)
-# Substitua 'ID_DA_EXTENSAO' pelo ID após carregar a extensão no Chrome
-./ultra-browser register ID_DA_EXTENSAO
 ```
 
 ### 3. Configuração da Extensão (Chrome)
 1.  Abra `chrome://extensions` no seu navegador.
 2.  Ative o **"Modo do desenvolvedor"** no canto superior direito.
 3.  Clique em **"Carregar sem compactação"** e selecione a pasta `extension/` deste repositório.
-4.  Copie o **ID da extensão** gerado e use-o no comando `register` acima.
 
 ### 4. Executando
-Para iniciar o servidor MCP persistente:
+Para iniciar o servidor MCP:
 
 ```bash
-./ultra-browser -server
+./ultra-browser
 ```
 
 ### 5. Using the MCP Tools
@@ -90,15 +85,13 @@ Configure your AI client to use the MCP server at
 | Comando | Descrição |
 | :--- | :--- |
 | `go test ./...` | Executa todos os testes unitários. |
-| `./ultra-browser register` | Cria o manifesto de Native Messaging. |
-| `./ultra-browser unregister` | Remove o registro do host nativo. |
 
 ---
 
 ## 🔒 Segurança e Privacidade
 
-- **Sandbox Local:** As ferramentas `capture_node` e `upload_file` são restritas ao diretório atual para evitar travessia de caminhos (`path traversal`).
-- **Comunicação Segura:** O binário valida o ID da extensão para garantir que apenas a sua extensão oficial possa enviar comandos.
+- **Sandbox Local:** As ferramentas `capture_node` e `upload_file` são restritas ao diretório de execução para evitar travessia de caminhos (`path traversal`).
+- **Comunicação Segura:** O binário atua como um hub, permitindo diferentes adaptadores de transporte com validação.
 - **Transparência:** Todas as ações são executadas na sua instância local do Chrome.
 
 ---
@@ -106,7 +99,7 @@ Configure your AI client to use the MCP server at
 ## 📈 Status do Projeto
 
 - [x] Definição da Arquitetura e PRD.
-- [x] Implementação da Bridge Native Messaging.
+- [x] Implementação do Bridge Hub agnóstico.
 - [x] Servidor MCP (HTTP/SSE/JSON-RPC).
 - [x] Extensão Chrome Base.
 - [x] Ferramentas essenciais de navegação e extração.

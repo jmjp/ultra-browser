@@ -14,7 +14,7 @@ import (
 )
 
 // RemoteBrowserPort implementa ports.BrowserPort atuando como servidor que
-// aguarda uma conexão de uma bridge remota (processo Native Messaging).
+// aguarda uma conexão de uma bridge remota (via HTTP/SSE ou outro transporte).
 type RemoteBrowserPort struct {
 	commands chan domain.BridgeMessage
 	events   chan domain.BridgeMessage
@@ -223,4 +223,18 @@ func (p *RemoteBrowserPort) HandleEvent(msg domain.BridgeMessage) {
 	default:
 		// Canal cheio: descarta evento para não bloquear o handler HTTP
 	}
+}
+
+// Close fecha a conexão com a bridge remota e limpa recursos.
+func (p *RemoteBrowserPort) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Limpa comandos pendentes
+	for id, ch := range p.pending {
+		close(ch)
+		delete(p.pending, id)
+	}
+
+	return nil
 }

@@ -2,18 +2,13 @@
   "manifest_version": 3,
   "name": "Ultra Browser Extension",
   "version": "1.0.0",
-  "description": "MCP bridge via Native Messaging for Ultra Browser",
+  "description": "MCP bridge for Ultra Browser",
   "permissions": [
     "tabs",
     "activeTab",
     "scripting",
-    "history",
-    "bookmarks",
-    "nativeMessaging",
-    "debugger",
-    "webRequest",
-    "storage",
-    "alarms"
+    "alarms",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// BridgeMessage representa o envelope de mensagem para o protocolo Native Messaging do Chrome.
+// BridgeMessage representa o envelope de mensagem para a comunicação com o navegador.
 type BridgeMessage struct {
 	ID     string          `json:"id"`
 	Tool   string          `json:"tool,omitempty"`
