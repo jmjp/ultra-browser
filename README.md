@@ -1,123 +1,74 @@
-# 🚀 Ultra Browser — Chrome MCP Server
+# 🚀 Ultra Browser — AI Browser Agent
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
-[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=google-chrome&logoColor=white)](https://developer.chrome.com/docs/extensions)
-[![MCP Protocol](https://img.shields.io/badge/MCP-Protocol-orange?style=for-the-badge)](https://modelcontextprotocol.io/)
+**Ultra Browser** é um AI Browser Agent completo que roda 100% dentro de uma Chrome Extension.
+Nenhum binário externo, nenhum processo em segundo plano fora do Chrome.
 
-**Ultra Browser** é um servidor MCP (Model Context Protocol) de alto desempenho que atua como uma ponte entre clientes de IA (como Claude Desktop, Gemini, etc.) e o navegador Google Chrome. Ele permite automação completa, extração de dados e interação com o DOM diretamente através de uma interface padronizada.
+O usuário instala a extensão e pode utilizá-la fornecendo sua própria API Key de provedores suportados (BYOK - Bring Your Own Key). A extensão possui integração total com APIs nativas e suporte a ferramentas Model Context Protocol (MCP) via HTTP/SSE.
 
 ---
 
-## 🏗️ Arquitetura do Sistema
+## 🏗️ Arquitetura Final
 
-O projeto utiliza uma **Arquitetura Hexagonal** (Ports and Adapters) para garantir pureza no domínio e facilidade de manutenção, mantendo zero dependências externas (apenas a `stdlib` do Go).
+A extensão atua tanto como a UI do Agente quanto o orquestrador das tarefas e interações:
 
-### Componentes Principais
-1.  **Go Binary (Backend):** Atua como o servidor MCP (JSON-RPC 2.0 via HTTP/SSE) e gerencia a comunicação Native Messaging com a extensão.
-2.  **Chrome Extension (Executor):** Uma extensão Manifest V3 que executa as ferramentas dentro das abas do navegador (manipulação de DOM, screenshots, etc.).
-3.  **Bridge Native Messaging:** Comunicação ultra-rápida via `stdin`/`stdout` com framing de 4 bytes.
-
-```mermaid
-graph TD
-    AI[AI Client / Claude] -- HTTP/SSE (MCP) --> Server[Go Binary]
-    Server -- Native Messaging --> Ext[Chrome Extension]
-    Ext -- DOM/Tab API --> Browser[Google Chrome]
+```
+Usuário
+  ↓ (Side Panel)
+Service Worker
+  ├── LLM API (fetch direto: Anthropic, OpenAI, Gemini, DeepSeek, Custom)
+  ├── Browser Tools (chrome.tabs, chrome.scripting, chrome.debugger)
+  └── MCP HTTP/SSE servers (fetch direto, configurados pelo usuário)
 ```
 
+### Componentes Principais
+
+1. **Manifest V3:** Configuração moderna de permissões, focando no Side Panel e permissões do Debugger/Scripting para automação.
+2. **Service Worker (`background/service-worker.js`):** Ponto central que orquestra o Agentic Loop, delega chamadas de ferramentas nativas do browser e interage com os clientes de IA e MCP.
+3. **LLM Adapters (`lib/llm/`):** Adaptadores independentes implementando interfaces de stream (SSE) para suportar múltiplos provedores usando endpoints diretos.
+4. **Browser Tools (`lib/tools/browser-tools.js`):** Implementação via `chrome.debugger` e `chrome.tabs` para automação que burla restrições nativas como o Content Security Policy (CSP).
+5. **Side Panel (`sidepanel/`):** Interface de usuário focada com Chat interativo, Planner para tarefas complexas e Visualizador de Logs.
+6. **Settings Page (`settings/`):** Gerencia chaves de API, provedores e endpoints MCP (Tudo salvo em armazenamento local).
+
 ---
 
-## 🛠️ Ferramentas MCP Disponíveis
+## 🚀 Instalação e Configuração
 
-O sistema expõe diversas capacidades de automação para a IA:
+### 1. Requisitos
+- **Google Chrome**
+
+### 2. Configurando a Extensão (Chrome)
+1. Abra `chrome://extensions` no seu navegador.
+2. Ative o **"Modo do desenvolvedor"** no canto superior direito.
+3. Clique em **"Carregar sem compactação"** e selecione a pasta `extension/` deste repositório.
+4. Para acessar a extensão, abra o painel lateral do Chrome e selecione o "Ultra Browser" no menu de Side Panels.
+
+### 3. Configurando as Ferramentas MCP (Opcional)
+Você pode adicionar servidores compatíveis com o Model Context Protocol (MCP) que rodam via HTTP/SSE. Vá na página de configurações do "Ultra Browser", seção de *Servidores MCP* e inclua as credenciais de URL/Porta dos seus servidores.
+
+---
+
+## 🛠️ Ferramentas Nativas
+
+O sistema expõe diversas capacidades de automação da navegação para o agente:
 
 | Ferramenta | Descrição |
 | :--- | :--- |
-| `list_tabs` | Lista todas as janelas e abas abertas. |
+| `list_tabs` | Lista todas as abas abertas. |
 | `navigate` | Navega para uma URL (aba ativa ou nova). |
 | `screenshot` | Captura um screenshot da aba ativa (PNG). |
-| `get_content` | Extrai todo o conteúdo de texto da página. |
-| `click` | Clica em um elemento via seletor CSS. |
-| `type_text` | Digita texto em campos de formulário. |
-| `execute_script` | Executa JavaScript arbitrário na página. |
-| `capture_node` | Captura um elemento específico (PNG ou HTML). |
+| `get_content` | Extrai todo o conteúdo de texto da página atual (via Debugger). |
+| `click` | Clica em um elemento via seletor CSS (via Debugger). |
+| `type_text` | Digita texto em campos de formulário (via Debugger). |
+| `execute_script` | Executa JavaScript arbitrário na página (via Debugger). |
+| `scroll` | Interações de rolagem e passar o mouse. |
 | `wait_for_element` | Aguarda a aparição de um elemento no DOM. |
-| `upload_file` | Realiza o upload de arquivos locais. |
-| `scroll` / `hover` | Interações de rolagem e passar o mouse. |
+| `get_page_info` | Retorna metadados da página atual. |
 
 ---
 
-## 🚀 Como Começar
-
-### 1. Requisitos
-- **Go 1.26 ou superior**
-- **Google Chrome**
-
-### 2. Configuração do Backend (Go)
-Compile o binário e registre o host nativo no sistema:
-
-```bash
-# Compilar o executável
-go build -o ultra-browser .
-
-# Registrar como host nativo (Necessário para o Chrome reconhecer o binário)
-# Substitua 'ID_DA_EXTENSAO' pelo ID após carregar a extensão no Chrome
-./ultra-browser register ID_DA_EXTENSAO
-```
-
-### 3. Configuração da Extensão (Chrome)
-1.  Abra `chrome://extensions` no seu navegador.
-2.  Ative o **"Modo do desenvolvedor"** no canto superior direito.
-3.  Clique em **"Carregar sem compactação"** e selecione a pasta `extension/` deste repositório.
-4.  Copie o **ID da extensão** gerado e use-o no comando `register` acima.
-
-### 4. Executando
-Para iniciar o servidor MCP persistente:
-
-```bash
-./ultra-browser -server
-```
-
-### 5. Using the MCP Tools
-
-Configure your AI client to use the MCP server at
-```bash
- http://localhost:12306/mcp
-```
----
-
-## 💻 Comandos de Desenvolvimento
-
-| Comando | Descrição |
-| :--- | :--- |
-| `go test ./...` | Executa todos os testes unitários. |
-| `./ultra-browser register` | Cria o manifesto de Native Messaging. |
-| `./ultra-browser unregister` | Remove o registro do host nativo. |
+## 🔒 Privacidade e Segurança
+- Todo o código interage diretamente usando o Chrome Extensions API.
+- As suas API Keys são armazenadas localmente no seu computador e comunicam-se diretamente com o serviço de LLM selecionado sem servidores intermediários de terceiros.
+- Não existem binários compilados em Go a serem executados separadamente, ou Native Messaging Hosts, assegurando que o escopo fica limitado às capacidades providenciadas pelo seu navegador Chrome e ferramentas MCP externas configuradas por si próprio.
 
 ---
-
-## 🔒 Segurança e Privacidade
-
-- **Sandbox Local:** As ferramentas `capture_node` e `upload_file` são restritas ao diretório atual para evitar travessia de caminhos (`path traversal`).
-- **Comunicação Segura:** O binário valida o ID da extensão para garantir que apenas a sua extensão oficial possa enviar comandos.
-- **Transparência:** Todas as ações são executadas na sua instância local do Chrome.
-
----
-
-## 📈 Status do Projeto
-
-- [x] Definição da Arquitetura e PRD.
-- [x] Implementação da Bridge Native Messaging.
-- [x] Servidor MCP (HTTP/SSE/JSON-RPC).
-- [x] Extensão Chrome Base.
-- [x] Ferramentas essenciais de navegação e extração.
-- [ ] Suporte a múltiplos perfis de navegador.
-- [ ] Modo Headless (opcional).
-
----
-
-## 📄 Licença
-
-Distribuído sob a licença MIT. Veja `LICENSE` para mais informações (se disponível).
-
----
-*Desenvolvido por João com foco em performance e minimalismo.*

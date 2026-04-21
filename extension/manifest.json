@@ -1,33 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Ultra Browser Extension",
-  "version": "1.0.0",
-  "description": "MCP bridge via Native Messaging for Ultra Browser",
+  "name": "Ultra Browser",
+  "version": "2.0.0",
+  "description": "AI Browser Agent com suporte a MCPs e subagentes",
   "permissions": [
+    "sidePanel",
     "tabs",
     "activeTab",
     "scripting",
-    "history",
-    "bookmarks",
-    "nativeMessaging",
     "debugger",
-    "webRequest",
     "storage",
-    "alarms"
+    "downloads"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background/service-worker.js",
+    "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Ultra Browser"
   },
   "icons": {
     "16": "icons/logo.png",

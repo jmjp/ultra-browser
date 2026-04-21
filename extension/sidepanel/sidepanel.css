@@ -1,0 +1,72 @@
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #f8f9fa;
+  color: #333;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background: white;
+  border-bottom: 1px solid #ddd;
+}
+
+.logo { font-weight: bold; font-size: 1.1em; }
+.header-actions { display: flex; align-items: center; gap: 10px; }
+
+.status {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+.status.offline { background: #ccc; }
+.status.online { background: #4caf50; }
+.status.running { background: #2196f3; animation: blink 1s infinite; }
+
+@keyframes blink { 50% { opacity: 0.5; } }
+
+#settings-btn { border: none; background: none; cursor: pointer; font-size: 1.2em; }
+
+.tabs { display: flex; border-bottom: 1px solid #ddd; background: white; }
+.tab { flex: 1; padding: 10px; border: none; background: none; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab.active { border-bottom-color: #2196f3; font-weight: bold; color: #2196f3; }
+
+.tab-content { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+.tab-content.active { display: flex; }
+
+.messages-list, .logs-list { flex: 1; overflow-y: auto; padding: 10px; }
+.message { margin-bottom: 10px; padding: 10px; border-radius: 8px; max-width: 85%; }
+.message.user { align-self: flex-end; background: #e3f2fd; margin-left: auto; }
+.message.assistant { align-self: flex-start; background: white; border: 1px solid #ddd; margin-right: auto; }
+
+.tool-indicator { display: flex; align-items: center; gap: 8px; padding: 10px; background: #fff3e0; border-top: 1px solid #ffe0b2; font-size: 0.9em; }
+.spinner { width: 12px; height: 12px; border: 2px solid #ff9800; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hidden { display: none !important; }
+
+.input-area { display: flex; padding: 10px; background: white; border-top: 1px solid #ddd; align-items: flex-end; gap: 8px; }
+.input-area textarea { flex: 1; resize: none; border: 1px solid #ccc; border-radius: 20px; padding: 8px 12px; max-height: 150px; overflow-y: auto; font-family: inherit; }
+.input-area button { border: none; background: #2196f3; color: white; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+#attach-btn { background: #f1f3f4; color: #333; }
+#cancel-btn { background: #f44336; }
+
+.attachments-preview { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px; background: white; }
+.attachment-item { position: relative; border: 1px solid #ddd; border-radius: 4px; padding: 2px; }
+.attachment-item img { max-height: 50px; }
+.attachment-item .remove { position: absolute; top: -5px; right: -5px; background: red; color: white; border-radius: 50%; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; }
+
+/* Planner */
+#tab-planner { padding: 10px; }
+#planner-input { width: 100%; height: 80px; resize: vertical; margin-bottom: 10px; box-sizing: border-box; }
+.plan-steps { flex: 1; overflow-y: auto; margin-top: 10px; border: 1px solid #eee; background: white; padding: 10px; }
+.step { margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+
+/* Logs */
+.log-entry { font-family: monospace; font-size: 0.85em; margin-bottom: 5px; word-break: break-all; }
+.log-entry.error { color: red; }
+.log-entry.success { color: green; }
