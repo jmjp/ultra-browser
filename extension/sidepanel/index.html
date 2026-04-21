@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ultra Browser</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <header>
+    <span class="logo">⚡ Ultra Browser</span>
+    <div class="header-actions">
+      <span id="status-indicator" class="status offline" title="Status do agente"></span>
+      <button id="settings-btn" title="Configurações">⚙️</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="chat">Chat</button>
+    <button class="tab" data-tab="planner">Planner</button>
+    <button class="tab" data-tab="logs">Logs</button>
+  </nav>
+
+  <!-- Aba Chat -->
+  <div id="tab-chat" class="tab-content active">
+    <div id="messages" class="messages-list"></div>
+    <div id="tool-indicator" class="tool-indicator hidden">
+      <span class="spinner"></span>
+      <span id="tool-name">Executando...</span>
+    </div>
+    <div id="attachments-preview" class="attachments-preview"></div>
+    <div class="input-area">
+      <button id="attach-btn" title="Anexar arquivo">📎</button>
+      <input type="file" id="file-input" multiple hidden>
+      <textarea id="chat-input" placeholder="Pergunte algo ou dê uma tarefa..." rows="1"></textarea>
+      <button id="send-btn">▶</button>
+      <button id="cancel-btn" class="hidden">■</button>
+    </div>
+  </div>
+
+  <!-- Aba Planner -->
+  <div id="tab-planner" class="tab-content hidden">
+    <textarea id="planner-input" placeholder="Descreva o objetivo do plano..."></textarea>
+    <button id="generate-plan-btn">Gerar Plano</button>
+    <div id="plan-steps" class="plan-steps"></div>
+    <button id="execute-plan-btn" class="hidden">▶ Executar Plano</button>
+  </div>
+
+  <!-- Aba Logs -->
+  <div id="tab-logs" class="tab-content hidden">
+    <div id="logs-list" class="logs-list"></div>
+    <button id="clear-logs-btn">Limpar</button>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
